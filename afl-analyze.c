@@ -45,6 +45,9 @@
 #include <sys/types.h>
 #include <sys/resource.h>
 
+#include <sys/mman.h>
+#include <fcntl.h>
+
 static s32 child_pid;                 /* PID of the tested program         */
 
 static u8* trace_bits;                /* SHM with instrumentation bitmap   */
@@ -64,8 +67,7 @@ static u32 in_len,                    /* Input data length                 */
 
 static u64 mem_limit = MEM_LIMIT;     /* Memory limit (MB)                 */
 
-static s32 shm_id,                    /* ID of the SHM region              */
-           dev_null_fd = -1;          /* FD to /dev/null                   */
+static s32 dev_null_fd = -1;          /* FD to /dev/null                   */
 
 static u8  edges_only,                /* Ignore hit counts?                */
            use_stdin = 1;             /* Use stdin for program input?      */
@@ -73,6 +75,12 @@ static u8  edges_only,                /* Ignore hit counts?                */
 static volatile u8
            stop_soon,                 /* Ctrl-C pressed?                   */
            child_timed_out;           /* Child timed out?                  */
+
+/* ================ Proteas ================ */
+static int g_shm_fd = -1;
+static unsigned char *g_shm_base = NULL;
+static char *g_shm_file_path = NULL;
+/* ========================================= */
 
 
 /* Constants used for describing byte behavior. */
@@ -149,8 +157,21 @@ static inline u8 anything_set(void) {
 static void remove_shm(void) {
 
   unlink(prog_in); /* Ignore errors */
-  shmctl(shm_id, IPC_RMID, NULL);
 
+  if (g_shm_base != NULL) {
+    munmap(g_shm_base, MAP_SIZE);
+    g_shm_base = NULL;
+  }
+
+  if (g_shm_fd != -1) {
+    close(g_shm_fd);
+    g_shm_fd = -1;
+  }
+
+  if (g_shm_file_path != NULL) {
+    free(g_shm_file_path);
+    g_shm_file_path = NULL;
+  }
 }
 
 
@@ -158,23 +179,32 @@ static void remove_shm(void) {
 
 static void setup_shm(void) {
 
-  u8* shm_str;
+  /* generate random file name for multi instance */
+  g_shm_file_path = (char *)malloc(L_tmpnam);
+  memset(g_shm_file_path, 0x0, L_tmpnam);
+  tmpnam(g_shm_file_path);
 
-  shm_id = shmget(IPC_PRIVATE, MAP_SIZE, IPC_CREAT | IPC_EXCL | 0600);
+  /* create the shared memory segment as if it was a file */
+  g_shm_fd = shm_open(g_shm_file_path, O_CREAT | O_RDWR | O_EXCL, 0600);
+  if (g_shm_fd == -1) {
+    PFATAL("shm_open() failed");
+  }
 
-  if (shm_id < 0) PFATAL("shmget() failed");
+  /* configure the size of the shared memory segment */
+  ftruncate(g_shm_fd, MAP_SIZE);
+
+  /* map the shared memory segment to the address space of the process */
+  g_shm_base = mmap(0, MAP_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, g_shm_fd, 0);
+  if (g_shm_base == MAP_FAILED) {
+    close(g_shm_fd);
+    g_shm_fd = -1;
+    PFATAL("mmap() failed");
+  }
 
   atexit(remove_shm);
-
-  shm_str = alloc_printf("%d", shm_id);
-
-  setenv(SHM_ENV_VAR, shm_str, 1);
-
-  ck_free(shm_str);
-
-  trace_bits = shmat(shm_id, NULL, 0);
   
-  if (!trace_bits) PFATAL("shmat() failed");
+  setenv(SHM_ENV_VAR, g_shm_file_path, 1);
+  trace_bits = g_shm_base;
 
 }
 

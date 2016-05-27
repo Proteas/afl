@@ -134,8 +134,6 @@ EXP_ST u8  virgin_bits[MAP_SIZE],     /* Regions yet untouched by fuzzing */
            virgin_hang[MAP_SIZE],     /* Bits we haven't seen in hangs    */
            virgin_crash[MAP_SIZE];    /* Bits we haven't seen in crashes  */
 
-static s32 shm_id;                    /* ID of the SHM region             */
-
 static volatile u8 stop_soon,         /* Ctrl-C pressed?                  */
                    clear_screen = 1,  /* Window resized?                  */
                    child_timed_out;   /* Traced process timed out?        */
@@ -269,6 +267,12 @@ static u8* (*post_handler)(u8* buf, u32* len);
 static s8  interesting_8[]  = { INTERESTING_8 };
 static s16 interesting_16[] = { INTERESTING_8, INTERESTING_16 };
 static s32 interesting_32[] = { INTERESTING_8, INTERESTING_16, INTERESTING_32 };
+
+/* ================ Proteas ================ */
+static int g_shm_fd = -1;
+static unsigned char *g_shm_base = NULL;
+static char *g_shm_file_path = NULL;
+/* ========================================= */
 
 /* Fuzzing stages */
 
@@ -1105,8 +1109,20 @@ static inline void classify_counts(u32* mem) {
 
 static void remove_shm(void) {
 
-  shmctl(shm_id, IPC_RMID, NULL);
+  if (g_shm_base != NULL) {
+    munmap(g_shm_base, MAP_SIZE);
+    g_shm_base = NULL;
+  }
 
+  if (g_shm_fd != -1) {
+    close(g_shm_fd);
+    g_shm_fd = -1;
+  }
+
+  if (g_shm_file_path != NULL) {
+    free(g_shm_file_path);
+    g_shm_file_path = NULL;
+  }
 }
 
 
@@ -1246,34 +1262,43 @@ static void cull_queue(void) {
 
 EXP_ST void setup_shm(void) {
 
-  u8* shm_str;
-
   if (!in_bitmap) memset(virgin_bits, 255, MAP_SIZE);
 
   memset(virgin_hang, 255, MAP_SIZE);
   memset(virgin_crash, 255, MAP_SIZE);
 
-  shm_id = shmget(IPC_PRIVATE, MAP_SIZE, IPC_CREAT | IPC_EXCL | 0600);
+  /* generate random file name for multi instance */
+  g_shm_file_path = (char *)malloc(L_tmpnam);
+  memset(g_shm_file_path, 0x0, L_tmpnam);
+  tmpnam(g_shm_file_path);
 
-  if (shm_id < 0) PFATAL("shmget() failed");
+  /* create the shared memory segment as if it was a file */
+  g_shm_fd = shm_open(g_shm_file_path, O_CREAT | O_RDWR | O_EXCL, 0600);
+  if (g_shm_fd == -1) {
+    PFATAL("shm_open() failed");
+  }
+
+  /* configure the size of the shared memory segment */
+  ftruncate(g_shm_fd, MAP_SIZE);
+
+  /* map the shared memory segment to the address space of the process */
+  g_shm_base = mmap(0, MAP_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, g_shm_fd, 0);
+  if (g_shm_base == MAP_FAILED) {
+    close(g_shm_fd);
+    g_shm_fd = -1;
+    PFATAL("mmap() failed");
+  }
 
   atexit(remove_shm);
-
-  shm_str = alloc_printf("%d", shm_id);
 
   /* If somebody is asking us to fuzz instrumented binaries in dumb mode,
      we don't want them to detect instrumentation, since we won't be sending
      fork server commands. This should be replaced with better auto-detection
      later on, perhaps? */
 
-  if (!dumb_mode) setenv(SHM_ENV_VAR, shm_str, 1);
+  if (!dumb_mode) setenv(SHM_ENV_VAR, g_shm_file_path, 1);
 
-  ck_free(shm_str);
-
-  trace_bits = shmat(shm_id, NULL, 0);
-  
-  if (!trace_bits) PFATAL("shmat() failed");
-
+  trace_bits = g_shm_base;
 }
 
 
@@ -6675,8 +6700,10 @@ EXP_ST void check_binary(u8* fname) {
 
 #else
 
+#if !defined(__arm__) && !defined(__arm64__)
   if (f_data[0] != 0xCF || f_data[1] != 0xFA || f_data[2] != 0xED)
     FATAL("Program '%s' is not a 64-bit Mach-O binary", target_path);
+#endif
 
 #endif /* ^!__APPLE__ */
 
