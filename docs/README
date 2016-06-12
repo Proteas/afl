@@ -1,5 +1,5 @@
 1. many thanks to Michal Zalewski <lcamtuf@google.com>.
-2. banch "ios-afl-clang-fast", can be used to build and fuzz arm64 iOS program.
+2. branch "ios-afl-clang-fast", can be used to build and fuzz arm64 iOS program.
 3. for OS X, afl-clang-fast(llvm mode) is ok, but afl-gcc is broken.
 4. compiling for linux is broken.
 5. if meet some issues, you could fork and edit.
