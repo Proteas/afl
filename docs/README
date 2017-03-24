@@ -1,3 +1,6 @@
+Clone: git clone -b "ios-afl-clang-fast" https://github.com/Proteas/afl-ios.git
+===============================================================================
+
 1. many thanks to Michal Zalewski <lcamtuf@google.com>.
 2. branch "ios-afl-clang-fast", can be used to build and fuzz arm64 iOS program.
 3. for OS X, afl-clang-fast(llvm mode) is ok, but afl-gcc is broken.
